@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -19,6 +20,8 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/truenas/truenas-csi/pkg/client"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"k8s.io/mount-utils"
 )
 
@@ -592,7 +595,7 @@ func (d *Driver) unaryInterceptor(ctx context.Context, req any, info *grpc.Unary
 
 	startTime := time.Now()
 	d.log.V(LogLevelDebug).Info("GRPC call started", "method", info.FullMethod, "requestId", requestID)
-	d.log.V(LogLevelTrace).Info("GRPC request", "method", info.FullMethod, "requestId", requestID, "request", sanitizeRequest(req))
+	d.log.V(LogLevelTrace).Info("GRPC request", "method", info.FullMethod, "requestId", requestID, "request", sanitizeLogObject(req))
 
 	resp, err := handler(ctx, req)
 
@@ -601,48 +604,74 @@ func (d *Driver) unaryInterceptor(ctx context.Context, req any, info *grpc.Unary
 		d.log.Error(err, "GRPC call failed", "method", info.FullMethod, "requestId", requestID, "duration", duration)
 	} else {
 		d.log.V(LogLevelDebug).Info("GRPC call completed", "method", info.FullMethod, "requestId", requestID, "duration", duration)
-		d.log.V(LogLevelTrace).Info("GRPC response", "method", info.FullMethod, "requestId", requestID, "response", resp)
+		d.log.V(LogLevelTrace).Info("GRPC response", "method", info.FullMethod, "requestId", requestID, "response", sanitizeLogObject(resp))
 	}
 
 	return resp, err
 }
 
-// sanitizeRequest removes sensitive data from requests before logging.
-func sanitizeRequest(req any) any {
-	switch r := req.(type) {
-	case *csi.CreateVolumeRequest:
-		if r == nil {
-			return nil
+// sanitizeLogObject removes sensitive data from CSI request/response objects
+// before trace logging. CSI messages are converted to a JSON-like map first so
+// every request shape, including future ones, gets the same recursive redaction.
+func sanitizeLogObject(obj any) any {
+	if obj == nil {
+		return nil
+	}
+	if msg, ok := obj.(proto.Message); ok {
+		data, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(msg)
+		if err != nil {
+			return fmt.Sprintf("%T", obj)
 		}
-		// Return a safe copy without potentially sensitive parameters
-		safe := &struct {
-			Name               string
-			CapacityRange      *csi.CapacityRange
-			VolumeCapabilities int
-			ParameterKeys      []string
-			HasSecrets         bool
-			HasVolumeSource    bool
-			AccessibilityReqs  bool
-		}{
-			Name:               r.Name,
-			CapacityRange:      r.CapacityRange,
-			VolumeCapabilities: len(r.VolumeCapabilities),
-			HasSecrets:         len(r.Secrets) > 0,
-			HasVolumeSource:    r.VolumeContentSource != nil,
-			AccessibilityReqs:  r.AccessibilityRequirements != nil,
+		var decoded any
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			return fmt.Sprintf("%T", obj)
 		}
-		for k := range r.Parameters {
-			// Don't include values that might contain secrets
-			if !strings.Contains(strings.ToLower(k), "secret") &&
-				!strings.Contains(strings.ToLower(k), "password") &&
-				!strings.Contains(strings.ToLower(k), "key") {
-				safe.ParameterKeys = append(safe.ParameterKeys, k)
+		return redactSensitiveValues(decoded)
+	}
+	return redactSensitiveValues(obj)
+}
+
+func redactSensitiveValues(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for k, val := range typed {
+			if sensitiveLogKey(k) {
+				out[k] = "<redacted>"
+			} else {
+				out[k] = redactSensitiveValues(val)
 			}
 		}
-		return safe
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(typed))
+		for k, val := range typed {
+			if sensitiveLogKey(k) {
+				out[k] = "<redacted>"
+			} else {
+				out[k] = val
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, val := range typed {
+			out[i] = redactSensitiveValues(val)
+		}
+		return out
 	default:
-		return req
+		return v
 	}
+}
+
+func sensitiveLogKey(key string) bool {
+	lower := strings.ToLower(key)
+	for _, token := range []string{"secret", "password", "passphrase", "key", "chap", "token", "api"} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
 }
 
 // initializeCapabilities sets up the controller, node, plugin, and volume capabilities.

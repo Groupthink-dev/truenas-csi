@@ -261,8 +261,17 @@ func (c *Client) GetNVMeNamespaceByDevice(ctx context.Context, devicePath string
 // GetNVMeNamespacesBySubsystem returns all namespaces belonging to a subsystem.
 func (c *Client) GetNVMeNamespacesBySubsystem(ctx context.Context, subsysID int) ([]NVMeNamespace, error) {
 	var all []NVMeNamespace
-	if err := c.Call(ctx, methodNVMetNamespaceQuery, []any{[][]any{}, &QueryOptions{}}, &all); err != nil {
-		return nil, fmt.Errorf("failed to query nvmet namespaces: %w", err)
+	filters := [][]any{{"subsys.id", "=", subsysID}}
+	if err := c.Call(ctx, methodNVMetNamespaceQuery, []any{filters, &QueryOptions{}}, &all); err != nil {
+		var fallback []NVMeNamespace
+		if fallbackErr := c.Call(ctx, methodNVMetNamespaceQuery, []any{[][]any{}, &QueryOptions{}}, &fallback); fallbackErr != nil {
+			return nil, fmt.Errorf("failed to query nvmet namespaces with filter: %w; fallback query failed: %v", err, fallbackErr)
+		}
+		all = fallback
+	} else if len(all) == 0 {
+		// Some TrueNAS versions may not support nested filters uniformly. Keep the
+		// old broad query as a compatibility fallback, then still filter locally.
+		_ = c.Call(ctx, methodNVMetNamespaceQuery, []any{[][]any{}, &QueryOptions{}}, &all)
 	}
 	var matched []NVMeNamespace
 	for _, ns := range all {
@@ -332,8 +341,15 @@ func (c *Client) CreateNVMePortSubsys(ctx context.Context, portID, subsysID int)
 // GetNVMePortSubsysBySubsystem returns the port links for a subsystem.
 func (c *Client) GetNVMePortSubsysBySubsystem(ctx context.Context, subsysID int) ([]NVMePortSubsys, error) {
 	var all []NVMePortSubsys
-	if err := c.Call(ctx, methodNVMetPortSubsysQuery, []any{[][]any{}, &QueryOptions{}}, &all); err != nil {
-		return nil, fmt.Errorf("failed to query nvmet port-subsys links: %w", err)
+	filters := [][]any{{"subsys.id", "=", subsysID}}
+	if err := c.Call(ctx, methodNVMetPortSubsysQuery, []any{filters, &QueryOptions{}}, &all); err != nil {
+		var fallback []NVMePortSubsys
+		if fallbackErr := c.Call(ctx, methodNVMetPortSubsysQuery, []any{[][]any{}, &QueryOptions{}}, &fallback); fallbackErr != nil {
+			return nil, fmt.Errorf("failed to query nvmet port-subsys links with filter: %w; fallback query failed: %v", err, fallbackErr)
+		}
+		all = fallback
+	} else if len(all) == 0 {
+		_ = c.Call(ctx, methodNVMetPortSubsysQuery, []any{[][]any{}, &QueryOptions{}}, &all)
 	}
 	var matched []NVMePortSubsys
 	for _, ps := range all {
@@ -396,8 +412,15 @@ func (c *Client) CreateNVMeHostSubsys(ctx context.Context, hostID, subsysID int)
 // whether a shared host can be garbage-collected.
 func (c *Client) GetNVMeHostSubsysByHost(ctx context.Context, hostID int) ([]NVMeHostSubsys, error) {
 	var all []NVMeHostSubsys
-	if err := c.Call(ctx, methodNVMetHostSubsysQuery, []any{[][]any{}, &QueryOptions{}}, &all); err != nil {
-		return nil, fmt.Errorf("failed to query nvmet host-subsys links: %w", err)
+	filters := [][]any{{"host.id", "=", hostID}}
+	if err := c.Call(ctx, methodNVMetHostSubsysQuery, []any{filters, &QueryOptions{}}, &all); err != nil {
+		var fallback []NVMeHostSubsys
+		if fallbackErr := c.Call(ctx, methodNVMetHostSubsysQuery, []any{[][]any{}, &QueryOptions{}}, &fallback); fallbackErr != nil {
+			return nil, fmt.Errorf("failed to query nvmet host-subsys links with host filter: %w; fallback query failed: %v", err, fallbackErr)
+		}
+		all = fallback
+	} else if len(all) == 0 {
+		_ = c.Call(ctx, methodNVMetHostSubsysQuery, []any{[][]any{}, &QueryOptions{}}, &all)
 	}
 	var matched []NVMeHostSubsys
 	for _, hs := range all {
@@ -411,8 +434,15 @@ func (c *Client) GetNVMeHostSubsysByHost(ctx context.Context, hostID int) ([]NVM
 // GetNVMeHostSubsysBySubsystem returns the host links for a subsystem.
 func (c *Client) GetNVMeHostSubsysBySubsystem(ctx context.Context, subsysID int) ([]NVMeHostSubsys, error) {
 	var all []NVMeHostSubsys
-	if err := c.Call(ctx, methodNVMetHostSubsysQuery, []any{[][]any{}, &QueryOptions{}}, &all); err != nil {
-		return nil, fmt.Errorf("failed to query nvmet host-subsys links: %w", err)
+	filters := [][]any{{"subsys.id", "=", subsysID}}
+	if err := c.Call(ctx, methodNVMetHostSubsysQuery, []any{filters, &QueryOptions{}}, &all); err != nil {
+		var fallback []NVMeHostSubsys
+		if fallbackErr := c.Call(ctx, methodNVMetHostSubsysQuery, []any{[][]any{}, &QueryOptions{}}, &fallback); fallbackErr != nil {
+			return nil, fmt.Errorf("failed to query nvmet host-subsys links with subsystem filter: %w; fallback query failed: %v", err, fallbackErr)
+		}
+		all = fallback
+	} else if len(all) == 0 {
+		_ = c.Call(ctx, methodNVMetHostSubsysQuery, []any{[][]any{}, &QueryOptions{}}, &all)
 	}
 	var matched []NVMeHostSubsys
 	for _, hs := range all {

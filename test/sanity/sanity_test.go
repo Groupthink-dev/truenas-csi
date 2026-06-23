@@ -221,7 +221,8 @@ func TestSanityNVMeOF(t *testing.T) {
 
 	// NVMe-oF parameters
 	sanityConfig.TestVolumeParameters = map[string]string{
-		"protocol": "nvmeof",
+		"protocol":            "nvmeof",
+		"nvmeof.allowAnyHost": "true",
 	}
 
 	sanity.Test(t, sanityConfig)
@@ -357,7 +358,7 @@ func TestNVMeOFBlockVolume(t *testing.T) {
 		Name:               "sanity-nvmeof-block",
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 1 << 30},
 		VolumeCapabilities: []*csi.VolumeCapability{blockCap},
-		Parameters:         map[string]string{"protocol": "nvmeof"},
+		Parameters:         map[string]string{"protocol": "nvmeof", "nvmeof.allowAnyHost": "true"},
 	})
 	if err != nil {
 		t.Fatalf("CreateVolume(block): %v", err)

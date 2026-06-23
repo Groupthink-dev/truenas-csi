@@ -10,6 +10,8 @@ provisioner: csi.truenas.io
 parameters:
   # Storage protocol: nfs, iscsi, or nvmeof
   protocol: "nvmeof"
+  # Unsafe lab/test opt-in. Prefer nvmeof.hostNQN for production StorageClasses.
+  nvmeof.allowAnyHost: "true"
   # ZFS compression
   compression: "LZ4"
   # ZVOL block size: 512, 1K, 2K, 4K, 8K, 16K, 32K, 64K, 128K

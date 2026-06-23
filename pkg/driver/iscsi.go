@@ -16,7 +16,9 @@ import (
 	"k8s.io/mount-utils"
 )
 
-// StorageClass parameter keys for iSCSI configuration
+// Legacy node-side iSCSI parameter keys. The documented controller keys
+// (paramISCSIChap*) are preferred, but these aliases are accepted for backward
+// compatibility with existing volume contexts.
 const (
 	paramCHAPUsername       = "iscsi.chapUsername"
 	paramCHAPPassword       = "iscsi.chapPassword"
@@ -100,11 +102,12 @@ func parseISCSIConfig(publishContext, volumeContext map[string]string) (*ISCSICo
 		config.LUN = int32(lun)
 	}
 
-	// CHAP credentials from volume context (StorageClass parameters)
-	config.CHAPUsername = volumeContext[paramCHAPUsername]
-	config.CHAPPassword = volumeContext[paramCHAPPassword]
-	config.CHAPUsernameIn = volumeContext[paramCHAPUsernameIn]
-	config.CHAPPasswordIn = volumeContext[paramCHAPPasswordIn]
+	// CHAP credentials from volume context (StorageClass parameters). Prefer
+	// documented controller keys, with legacy node aliases as fallback.
+	config.CHAPUsername = volumeContextValue(volumeContext, paramISCSIChapUser, paramCHAPUsername)
+	config.CHAPPassword = volumeContextValue(volumeContext, paramISCSIChapSecret, paramCHAPPassword)
+	config.CHAPUsernameIn = volumeContextValue(volumeContext, paramISCSIChapPeerUser, paramCHAPUsernameIn)
+	config.CHAPPasswordIn = volumeContextValue(volumeContext, paramISCSIChapPeerSecret, paramCHAPPasswordIn)
 
 	// Multipath and persistent sessions
 	if val := volumeContext[paramMultipathEnabled]; strings.EqualFold(val, "true") {
@@ -115,6 +118,15 @@ func parseISCSIConfig(publishContext, volumeContext map[string]string) (*ISCSICo
 	}
 
 	return config, nil
+}
+
+func volumeContextValue(volumeContext map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if val := volumeContext[key]; val != "" {
+			return val
+		}
+	}
+	return ""
 }
 
 // buildConnector creates a csi-lib-iscsi Connector from our config

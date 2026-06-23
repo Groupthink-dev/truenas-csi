@@ -109,8 +109,9 @@ func (s *NodeServer) handlerForVolume(volumeID string) ProtocolHandler {
 	return s.nfsHandler
 }
 
-// validateVolumeCapability checks if the requested capability is supported
-func (s *NodeServer) validateVolumeCapability(cap *csi.VolumeCapability) error {
+// validateVolumeCapability checks if the requested capability is supported for
+// the protocol in the publish context.
+func (s *NodeServer) validateVolumeCapability(protocol string, cap *csi.VolumeCapability) error {
 	if cap == nil {
 		return fmt.Errorf("volume capability is nil")
 	}
@@ -128,6 +129,9 @@ func (s *NodeServer) validateVolumeCapability(cap *csi.VolumeCapability) error {
 	supportedModes := s.driver.VolumeCaps()
 	for _, supported := range supportedModes {
 		if cap.AccessMode.Mode == supported.Mode {
+			if !accessModeSupportedForProtocol(protocol, cap.AccessMode.Mode) {
+				return fmt.Errorf("access mode %v not supported for protocol %s", cap.AccessMode.Mode, protocol)
+			}
 			return nil
 		}
 	}
@@ -151,7 +155,7 @@ func (s *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolu
 	}
 
 	// Validate volume capability is supported
-	if err := s.validateVolumeCapability(req.VolumeCapability); err != nil {
+	if err := s.validateVolumeCapability(req.PublishContext[PublishContextProtocol], req.VolumeCapability); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported volume capability: %v", err)
 	}
 
@@ -266,7 +270,7 @@ func (s *NodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublish
 	}
 
 	// Validate volume capability is supported
-	if err := s.validateVolumeCapability(req.VolumeCapability); err != nil {
+	if err := s.validateVolumeCapability(req.PublishContext[PublishContextProtocol], req.VolumeCapability); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported volume capability: %v", err)
 	}
 
@@ -496,10 +500,7 @@ func (s *NodeServer) getFSStats(path string) (*fsStats, error) {
 		return nil, fmt.Errorf("statfs failed: %v", err)
 	}
 
-	blockSize := stat.Frsize
-	if blockSize == 0 {
-		blockSize = stat.Bsize
-	}
+	blockSize := statfsBlockSize(&stat)
 
 	totalBytes := int64(stat.Blocks) * blockSize
 	availableBytes := int64(stat.Bavail) * blockSize

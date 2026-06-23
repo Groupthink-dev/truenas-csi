@@ -184,11 +184,15 @@ sudo systemctl enable microk8s-mount-propagation
 
 #### NVMe-oF Parameters
 
-NVMe-oF also uses the `volblocksize` parameter above. DH-CHAP authentication is optional.
+NVMe-oF also uses the `volblocksize` parameter above. NVMe-oF exports are
+host-restricted by default: set `nvmeof.hostNQN` for an authorized host, or set
+`nvmeof.allowAnyHost: "true"` only for explicitly accepted unauthenticated test
+or lab deployments. DH-CHAP authentication is optional when a host NQN is set.
 
 | Parameter | Description | Values |
 |-----------|-------------|--------|
-| `nvmeof.hostNQN` | Authorized host NQN (required for DH-CHAP) | `nqn.2014-08.org.nvmexpress:uuid:...` |
+| `nvmeof.hostNQN` | Authorized host NQN (required unless `nvmeof.allowAnyHost` is true) | `nqn.2014-08.org.nvmexpress:uuid:...` |
+| `nvmeof.allowAnyHost` | Explicit unsafe opt-in for unrestricted host access | `true`, `false` |
 | `nvmeof.dhchapKey` | DH-CHAP host key | `DHHC-1:00:...` |
 | `nvmeof.dhchapCtrlKey` | Mutual DH-CHAP controller key | `DHHC-1:00:...` |
 | `nvmeof.dhchapHash` | DH-CHAP hash (default `SHA-256`) | `SHA-256`, `SHA-384`, `SHA-512` |

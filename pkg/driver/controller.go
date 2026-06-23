@@ -89,6 +89,7 @@ const (
 	// NVMe-oF parameters. DH-CHAP credentials are plaintext StorageClass params
 	// (like iSCSI CHAP) and flow to the node via the volume context.
 	paramNVMeOFHostNQN       = "nvmeof.hostNQN"
+	paramNVMeOFAllowAnyHost  = "nvmeof.allowAnyHost"
 	paramNVMeOFDHCHAPKey     = "nvmeof.dhchapKey"
 	paramNVMeOFDHCHAPCtrlKey = "nvmeof.dhchapCtrlKey"
 	paramNVMeOFDHCHAPHash    = "nvmeof.dhchapHash"
@@ -170,7 +171,8 @@ func NewControllerServer(d *Driver) *ControllerServer {
 }
 
 // validateVolumeCapabilities checks if the requested capabilities are supported
-func (s *ControllerServer) validateVolumeCapabilities(caps []*csi.VolumeCapability) error {
+// for the selected storage protocol.
+func (s *ControllerServer) validateVolumeCapabilities(protocol string, caps []*csi.VolumeCapability) error {
 	supportedModes := s.driver.VolumeCaps()
 	for _, cap := range caps {
 		// Must have either block or mount capability
@@ -190,8 +192,23 @@ func (s *ControllerServer) validateVolumeCapabilities(caps []*csi.VolumeCapabili
 		if !modeSupported {
 			return fmt.Errorf("access mode %v not supported", cap.AccessMode.Mode)
 		}
+		if !accessModeSupportedForProtocol(protocol, cap.AccessMode.Mode) {
+			return fmt.Errorf("access mode %v not supported for protocol %s", cap.AccessMode.Mode, protocol)
+		}
 	}
 	return nil
+}
+
+func accessModeSupportedForProtocol(protocol string, mode csi.VolumeCapability_AccessMode_Mode) bool {
+	switch strings.ToLower(protocol) {
+	case ProtocolISCSI, ProtocolNVMeOF:
+		switch mode {
+		case csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER,
+			csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER:
+			return false
+		}
+	}
+	return true
 }
 
 // validateStorageClassParameters validates StorageClass parameters
@@ -211,8 +228,13 @@ func (s *ControllerServer) validateStorageClassParameters(ctx context.Context, p
 		}
 	}
 
-	// Validate NVMe-oF DH-CHAP parameters
-	if err := validateNVMeOFParameters(parameters); err != nil {
+	protocol := ProtocolNFS
+	if val, ok := parameters[paramProtocol]; ok {
+		protocol = strings.ToLower(val)
+	}
+
+	// Validate NVMe-oF authorization and DH-CHAP parameters.
+	if err := validateNVMeOFParameters(protocol, parameters); err != nil {
 		return err
 	}
 
@@ -290,10 +312,6 @@ func (s *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		return nil, status.Error(codes.InvalidArgument, "volume capabilities are required")
 	}
 
-	if err := s.validateVolumeCapabilities(req.VolumeCapabilities); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid volume capabilities: %v", err)
-	}
-
 	var requiredBytes int64
 	if req.CapacityRange != nil {
 		requiredBytes = req.CapacityRange.RequiredBytes
@@ -310,12 +328,16 @@ func (s *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		parameters = make(map[string]string)
 	}
 
+	protocol := s.driver.GetProtocolFromParameters(parameters)
+	if err := s.validateVolumeCapabilities(protocol, req.VolumeCapabilities); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid volume capabilities: %v", err)
+	}
+
 	// Validate StorageClass parameters
 	if err := s.validateStorageClassParameters(ctx, parameters); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid storage class parameters: %v", err)
 	}
 
-	protocol := s.driver.GetProtocolFromParameters(parameters)
 	pool := s.driver.GetPoolFromParameters(parameters)
 
 	volumeName := SanitizeVolumeName(req.Name)
@@ -598,11 +620,25 @@ var validNVMeOFDHGroups = map[string]bool{
 	"2048-BIT": true, "3072-BIT": true, "4096-BIT": true, "6144-BIT": true, "8192-BIT": true,
 }
 
-// validateNVMeOFParameters validates the NVMe-oF DH-CHAP StorageClass parameters.
-func validateNVMeOFParameters(parameters map[string]string) error {
+// validateNVMeOFParameters validates NVMe-oF host authorization and DH-CHAP
+// StorageClass parameters.
+func validateNVMeOFParameters(protocol string, parameters map[string]string) error {
 	hostNQN := parameters[paramNVMeOFHostNQN]
 	key := parameters[paramNVMeOFDHCHAPKey]
 	ctrlKey := parameters[paramNVMeOFDHCHAPCtrlKey]
+	allowAnyHost, err := nvmeOFAllowAnyHost(parameters)
+	if err != nil {
+		return err
+	}
+
+	if protocol == ProtocolNVMeOF {
+		if hostNQN == "" && !allowAnyHost {
+			return fmt.Errorf("%s is required for NVMe-oF unless %s is explicitly true", paramNVMeOFHostNQN, paramNVMeOFAllowAnyHost)
+		}
+		if hostNQN != "" && allowAnyHost {
+			return fmt.Errorf("%s cannot be true when %s is set", paramNVMeOFAllowAnyHost, paramNVMeOFHostNQN)
+		}
+	}
 
 	if key != "" && hostNQN == "" {
 		return fmt.Errorf("%s is required when %s is set", paramNVMeOFHostNQN, paramNVMeOFDHCHAPKey)
@@ -617,6 +653,21 @@ func validateNVMeOFParameters(parameters map[string]string) error {
 		return fmt.Errorf("invalid %s: %s (valid: 2048-BIT, 3072-BIT, 4096-BIT, 6144-BIT, 8192-BIT)", paramNVMeOFDHCHAPDHGroup, g)
 	}
 	return nil
+}
+
+func nvmeOFAllowAnyHost(parameters map[string]string) (bool, error) {
+	val, ok := parameters[paramNVMeOFAllowAnyHost]
+	if !ok || val == "" {
+		return false, nil
+	}
+	switch strings.ToLower(val) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid %s: %s (valid: true, false)", paramNVMeOFAllowAnyHost, val)
+	}
 }
 
 // makeNVMeSubsysName creates a valid subsystem name from a volume ID. TrueNAS
@@ -696,7 +747,7 @@ func (s *ControllerServer) buildZVOLCreateOptions(datasetPath string, capacityBy
 func (s *ControllerServer) ensureNVMeHost(ctx context.Context, parameters map[string]string) (int, error) {
 	hostNQN := parameters[paramNVMeOFHostNQN]
 	if hostNQN == "" {
-		return 0, fmt.Errorf("nvmeof.hostNQN is required for DH-CHAP")
+		return 0, fmt.Errorf("%s is required for NVMe-oF host authorization", paramNVMeOFHostNQN)
 	}
 
 	if host, err := s.driver.Client().GetNVMeHostByNQN(ctx, hostNQN); err == nil && host != nil {
@@ -741,7 +792,11 @@ func (s *ControllerServer) createNVMeOFVolume(ctx context.Context, volumeID, dat
 	}
 
 	hostNQN := parameters[paramNVMeOFHostNQN]
-	allowAnyHost := hostNQN == ""
+	allowAnyHost, err := nvmeOFAllowAnyHost(parameters)
+	if err != nil {
+		cleanupDataset()
+		return nil, err
+	}
 
 	subsys, err := s.driver.Client().CreateNVMeSubsystem(ctx, makeNVMeSubsysName(volumeID), allowAnyHost)
 	if err != nil {
@@ -831,7 +886,10 @@ func (s *ControllerServer) ensureNVMeOFChain(ctx context.Context, volumeID, data
 	}
 
 	hostNQN := parameters[paramNVMeOFHostNQN]
-	allowAnyHost := hostNQN == ""
+	allowAnyHost, err := nvmeOFAllowAnyHost(parameters)
+	if err != nil {
+		return nil, err
+	}
 
 	subsysName := makeNVMeSubsysName(volumeID)
 	subsys, err := s.driver.Client().GetNVMeSubsystemByName(ctx, subsysName)
@@ -1550,7 +1608,10 @@ func (s *ControllerServer) createNVMeOFTargetForClone(ctx context.Context, volum
 	}
 
 	hostNQN := parameters[paramNVMeOFHostNQN]
-	allowAnyHost := hostNQN == ""
+	allowAnyHost, err := nvmeOFAllowAnyHost(parameters)
+	if err != nil {
+		return nil, err
+	}
 
 	subsys, err := s.driver.Client().CreateNVMeSubsystem(ctx, makeNVMeSubsysName(volumeID), allowAnyHost)
 	if err != nil {
@@ -1871,8 +1932,13 @@ func (s *ControllerServer) ValidateVolumeCapabilities(ctx context.Context, req *
 		return nil, status.Errorf(codes.NotFound, "volume not found: %v", err)
 	}
 
+	protocol := s.driver.GetProtocolFromParameters(req.Parameters)
+	if req.Parameters[paramProtocol] == "" && req.VolumeContext[PublishContextProtocol] != "" {
+		protocol = strings.ToLower(req.VolumeContext[PublishContextProtocol])
+	}
+
 	// Validate the requested capabilities
-	if err := s.validateVolumeCapabilities(req.VolumeCapabilities); err != nil {
+	if err := s.validateVolumeCapabilities(protocol, req.VolumeCapabilities); err != nil {
 		return &csi.ValidateVolumeCapabilitiesResponse{
 			Message: err.Error(),
 		}, nil
@@ -1895,9 +1961,16 @@ func (s *ControllerServer) ListVolumes(ctx context.Context, req *csi.ListVolumes
 
 	s.driver.Log().V(LogLevelDebug).Info("ListVolumes called", "startingToken", req.StartingToken, "maxEntries", req.MaxEntries)
 
-	// Validate starting_token - we don't use pagination, so any non-empty token is invalid
+	startOffset := 0
 	if req.StartingToken != "" {
-		return nil, status.Error(codes.Aborted, "invalid starting_token")
+		var err error
+		startOffset, err = strconv.Atoi(req.StartingToken)
+		if err != nil || startOffset < 0 {
+			return nil, status.Error(codes.Aborted, "invalid starting_token")
+		}
+	}
+	if req.MaxEntries < 0 {
+		return nil, status.Error(codes.InvalidArgument, "max_entries cannot be negative")
 	}
 
 	// Query TrueNAS for all datasets in the default pool
@@ -1938,8 +2011,20 @@ func (s *ControllerServer) ListVolumes(ctx context.Context, req *csi.ListVolumes
 		entries = append(entries, entry)
 	}
 
+	if startOffset > len(entries) {
+		return nil, status.Error(codes.Aborted, "invalid starting_token: offset exceeds total volumes")
+	}
+	paginatedEntries := entries[startOffset:]
+	maxEntries := int(req.MaxEntries)
+	var nextToken string
+	if maxEntries > 0 && len(paginatedEntries) > maxEntries {
+		paginatedEntries = paginatedEntries[:maxEntries]
+		nextToken = strconv.Itoa(startOffset + maxEntries)
+	}
+
 	return &csi.ListVolumesResponse{
-		Entries: entries,
+		Entries:   paginatedEntries,
+		NextToken: nextToken,
 	}, nil
 }
 

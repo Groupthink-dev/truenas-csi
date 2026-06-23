@@ -28,6 +28,26 @@ func firstParamMap(t *testing.T, mock *MockTrueNASServer, method string) map[str
 	return m
 }
 
+func firstQueryFilters(t *testing.T, mock *MockTrueNASServer, method string) [][]any {
+	t.Helper()
+	reqs := mock.GetRequestsByMethod(method)
+	if len(reqs) == 0 {
+		t.Fatalf("no recorded request for %s", method)
+	}
+	var params []json.RawMessage
+	if err := json.Unmarshal(reqs[0].Params, &params); err != nil {
+		t.Fatalf("unmarshal params for %s: %v", method, err)
+	}
+	if len(params) == 0 {
+		t.Fatalf("no positional params for %s", method)
+	}
+	var filters [][]any
+	if err := json.Unmarshal(params[0], &filters); err != nil {
+		t.Fatalf("unmarshal filters for %s: %v", method, err)
+	}
+	return filters
+}
+
 func TestGetNVMeGlobalConfig_Success(t *testing.T) {
 	mock := NewMockTrueNASServer()
 	defer mock.Close()
@@ -184,6 +204,11 @@ func TestGetNVMeNamespacesBySubsystem_FiltersClientSide(t *testing.T) {
 	for _, ns := range got {
 		assertEqual(t, ns.Subsys.ID, 7)
 	}
+
+	filters := firstQueryFilters(t, mock, methodNVMetNamespaceQuery)
+	assertEqual(t, filters[0][0], "subsys.id")
+	assertEqual(t, filters[0][1], "=")
+	assertEqual(t, filters[0][2].(float64), float64(7))
 }
 
 func TestCreateNVMePort_AndGetByAddr(t *testing.T) {
@@ -259,6 +284,11 @@ func TestGetNVMePortSubsysBySubsystem_FiltersClientSide(t *testing.T) {
 	assertNoError(t, err)
 	assertLen(t, got, 1)
 	assertEqual(t, got[0].ID, 1)
+
+	filters := firstQueryFilters(t, mock, methodNVMetPortSubsysQuery)
+	assertEqual(t, filters[0][0], "subsys.id")
+	assertEqual(t, filters[0][1], "=")
+	assertEqual(t, filters[0][2].(float64), float64(7))
 }
 
 func TestCreateNVMeHost_WithDHCHAP(t *testing.T) {
@@ -320,6 +350,11 @@ func TestGetNVMeHostSubsysByHost_FiltersForGC(t *testing.T) {
 	got, err := client.GetNVMeHostSubsysByHost(testContext(t), 5)
 	assertNoError(t, err)
 	assertLen(t, got, 2)
+
+	filters := firstQueryFilters(t, mock, methodNVMetHostSubsysQuery)
+	assertEqual(t, filters[0][0], "host.id")
+	assertEqual(t, filters[0][1], "=")
+	assertEqual(t, filters[0][2].(float64), float64(5))
 }
 
 func TestGetNVMeHostSubsysBySubsystem_FiltersClientSide(t *testing.T) {
@@ -339,6 +374,11 @@ func TestGetNVMeHostSubsysBySubsystem_FiltersClientSide(t *testing.T) {
 	got, err := client.GetNVMeHostSubsysBySubsystem(testContext(t), 7)
 	assertNoError(t, err)
 	assertLen(t, got, 2)
+
+	filters := firstQueryFilters(t, mock, methodNVMetHostSubsysQuery)
+	assertEqual(t, filters[0][0], "subsys.id")
+	assertEqual(t, filters[0][1], "=")
+	assertEqual(t, filters[0][2].(float64), float64(7))
 }
 
 func TestDeleteNVMeResources_SendID(t *testing.T) {
